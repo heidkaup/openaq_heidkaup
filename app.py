@@ -60,19 +60,20 @@ def get_count():
 @app.route("/api/measurements/avg", methods=["GET"])
 def get_avg():
     location_id = request.args.get("location_id")
-    sensor_id = request.args.get("sensor_id")
+    parameter = request.args.get("parameter")  # esim. pm10
     day = request.args.get("day")
 
     conn = get_db()
     cur = conn.cursor()
 
     cur.execute("""
-        SELECT AVG(value)
-        FROM measurements
-        WHERE locationsID = %s
-        AND sensorsID = %s
-        AND DATE(measured_at) = %s
-    """, (location_id, sensor_id, day))
+        SELECT AVG(m.value)
+        FROM measurements m
+        JOIN sensors s ON m.sensorsID = s.sensorsID
+        WHERE m.locationsID = %s
+        AND s.parameter = %s
+        AND DATE(m.measured_at) = %s
+    """, (location_id, parameter, day))
 
     avg = cur.fetchone()[0]
     cur.close()

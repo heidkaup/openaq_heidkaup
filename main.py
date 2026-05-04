@@ -38,7 +38,7 @@ API_KEY = '0fa2bad4d6736109872dce1c457bffd4e743172f0c0e1dd0b2703aa302f37534'
 # tämä funktio saa parametrinaan kaupungin bounding boxin get_bbox-funktiolta
 def get_openaq_locations_by_bbox(_bbox):
     response = requests.get(
-        f'https://api.openaq.org/v3/locations?limit=1000&page=1&order_by=id&sort_order=asc&bbox={_bbox}',
+        f"https://api.openaq.org/v3/locations?limit=1000&page=1&order_by=id&sort_order=asc&bbox={_bbox}",
         headers={'X-API-Key': API_KEY}
     )
     _locations = []
@@ -70,6 +70,38 @@ def download_file_by_location(location_id, year, month, day):
 
 load_dotenv()
 
+# maa kaupunki sijainti
+def sync_location_metadata(cursor, loc_data):
+    # maa
+    country_obj = loc_data.get("country", {})
+    country_name = country_obj.get("name", "Unknown")
+    cursor.execute("SELECT countriesID FROM countries WHERE name = %s", (country_name,))
+    res = cursor.fetchone()
+    if res:
+        country_id = res[0]
+    else:
+        cursor.execute("INSERT INTO countries (name) VALUES (%s)", (country_name,))
+        country_id = cursor.lastrowid
+
+    # kaupunki
+    city_name = loc_data.get('locality', 'Unknown')
+    cursor.execute("SELECT citiesID FROM cities WHERE name = %s AND countriesID = %s", (city_name, country_id))
+    res = cursor.fetchone()
+    if res:
+        city_id = res[0]
+    else:
+        cursor.execute("INSERT INTO cities (name, countriesID) VALUES (%s, %s)", (city_name, country_id))
+        city_id = cursor.lastrowid
+
+    # mittauspaikka
+    loc_id = loc_data['id']
+    cursor.execute("SELECT locationsID FROM locations WHERE locationsID = %s", (loc_id,))
+    if not cursor.fetchone():
+        cursor.execute(
+            "INSERT INTO locations (locationsID, name, citiesID) VALUES (%s, %s, %s)",
+            (loc_id, loc_data['name'], city_id)
+        )
+    return loc_id
 
 def insert_csv_to_db(csv_file):
     conn = mysql.connector.connect(
@@ -79,16 +111,15 @@ def insert_csv_to_db(csv_file):
         database=os.getenv("DB_NAME")
     )
     cursor = conn.cursor()
-
     df = pd.read_csv(csv_file)
 
     for _, row in df.iterrows():
+        # sensori
         cursor.execute(
             "SELECT sensorsID FROM sensors WHERE parameter=%s AND unit=%s",
             (row["parameter"], row["units"])
         )
         res = cursor.fetchone()
-
         if res:
             sensors_id = res[0]
         else:
@@ -98,6 +129,7 @@ def insert_csv_to_db(csv_file):
             )
             sensors_id = cursor.lastrowid
 
+        # mittaus
         cursor.execute(
             """
             INSERT INTO measurements (locationsID, sensorsID, value, measured_at)
@@ -111,9 +143,33 @@ def insert_csv_to_db(csv_file):
     conn.close()
 
 
-
 # testikutsu
 if __name__ == "__main__":
-    insert_csv_to_db("4588-20230101.csv")
-    print("Data viety tietokantaan")
+    # haetaan paikan tiedot API:sta
+    city_to_search = "Helsinki"
+    bbox = get_bbox(city_to_search)
+    locations = get_openaq_locations_by_bbox(bbox)
 
+    # muodostetaan yhteys ja varmistetaan ylärakenteet
+    conn = mysql.connector.connect(
+        host=os.getenv("DB_HOST"),
+        user=os.getenv("DB_USER"),
+        password=os.getenv("DB_PASSWORD"),
+        database=os.getenv("DB_NAME")
+    )
+    cursor = conn.cursor()
+
+    target_location_id = 4588
+    for loc in locations:
+        if loc['id'] == target_location_id:
+            sync_location_metadata(cursor, loc)
+            conn.commit()
+            print(f"Sijainti, kaupunki ja maa lisätty tietokantaan")
+            break
+
+    cursor.close()
+    conn.close()
+
+    # viedään csv tietokantaan
+    insert_csv_to_db("4588-20230101.csv")
+    print("Mittausdata viety tietokantaan")
