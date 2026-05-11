@@ -111,6 +111,10 @@ def insert_csv_to_db(csv_file):
         database=os.getenv("DB_NAME")
     )
     cursor = conn.cursor()
+    # lisätään datan poisto ennen uutta ajoa
+    cursor.execute("DELETE FROM measurements")
+
+
     df = pd.read_csv(csv_file)
 
     for _, row in df.iterrows():
